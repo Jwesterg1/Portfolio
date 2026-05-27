@@ -1,0 +1,13 @@
+IndicatorType,IndicatorValue,ThreatType,Confidence,Source,Description,ExpirationDate
+IP,185.220.101.45,C2,High,abuse.ch Feodo Tracker,Known Cobalt Strike C2 server,2025-12-31
+IP,194.165.16.11,Scanner,Medium,Emerging Threats,Mass scanning for exposed RDP,2025-12-31
+IP,45.133.1.100,Malware,High,AlienVault OTX,Emotet botnet infrastructure,2025-12-31
+IP,91.219.236.166,Phishing,High,Internal,Observed in phishing campaign targeting org,2025-12-31
+Domain,evil-update-cdn.com,Malware,High,abuse.ch,Malware delivery domain observed in sandbox,2025-12-31
+Domain,secure-login-verify.tk,Phishing,High,AlienVault OTX,Credential phishing site mimicking Microsoft,2025-12-31
+Domain,update-flash-player.ru,Malware,Medium,Emerging Threats,Drive-by download domain,2025-12-31
+FileHash,44d88612fea8a8f36de82e1278abb02f,Malware,High,MalwareBazaar,Emotet dropper SHA256,2025-12-31
+FileHash,3395856ce81f2b7382dee72602f798b642f436d,Malware,High,VirusTotal,Mimikatz binary SHA1,2025-12-31
+FileHash,e3b0c44298fc1c149afbf4c8996fb92427ae41e4da3,Malware,Low,Internal,Suspicious binary from endpoint alert,2025-12-31
+URL,http://malicious-site.ru/payload.exe,Malware,High,abuse.ch,Active malware distribution URL,2025-12-31
+URL,http://phish.example.tk/microsoft/login,Phishing,High,Internal,Phishing URL from reported email,2025-12-31

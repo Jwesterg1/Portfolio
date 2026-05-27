@@ -1,0 +1,135 @@
+// ============================================================
+// Rule Name:    Threat Intel Watchlist Match
+// Description:  Correlates network activity, sign-in logs, and
+//               security events against a Sentinel watchlist of
+//               known malicious indicators (IPs, domains, hashes).
+//               Watchlist is populated from external threat intel
+//               feeds (e.g. CISA KEV, abuse.ch, AlienVault OTX).
+// Tactic:       Multiple (depends on indicator type)
+// Technique:    T1071 - Application Layer Protocol
+//               T1566 - Phishing
+//               T1190 - Exploit Public-Facing Application
+// Severity:     High
+// Frequency:    Every 1 hour
+// Lookback:     1 hour
+// Data Source:  SigninLogs, SecurityEvent, CommonSecurityLog
+//               _GetWatchlist() - Sentinel Watchlist
+// ============================================================
+
+// ----------------------------------------------------------
+// WATCHLIST SETUP:
+// Create a Sentinel Watchlist named "ThreatIntelIndicators"
+// with the following columns:
+//   IndicatorType  (IP, Domain, FileHash, URL)
+//   IndicatorValue (the actual IOC)
+//   ThreatType     (Malware, C2, Phishing, Scanner, etc.)
+//   Confidence     (High, Medium, Low)
+//   Source         (e.g. CISA, abuse.ch, OTX, Internal)
+//   ExpirationDate (optional — for time-bound IOCs)
+// ----------------------------------------------------------
+
+
+// --- Variant 1: Malicious IP match against Sign-In Logs ---
+
+let ThreatIPs =
+    _GetWatchlist('ThreatIntelIndicators')
+    | where IndicatorType == "IP"
+    | where Confidence in ("High", "Medium")
+    | project IndicatorValue, ThreatType, Source, Confidence;
+
+SigninLogs
+| where TimeGenerated >= ago(1h)
+| join kind=inner (ThreatIPs) on $left.IPAddress == $right.IndicatorValue
+| project
+    TimeGenerated,
+    UserPrincipalName,
+    IPAddress,
+    ThreatType,
+    Source,
+    Confidence,
+    Location,
+    AppDisplayName,
+    ResultType,
+    ResultDescription
+| order by TimeGenerated desc
+
+
+// --- Variant 2: Malicious IP match against Windows Security Events ---
+
+// let ThreatIPs =
+//     _GetWatchlist('ThreatIntelIndicators')
+//     | where IndicatorType == "IP"
+//     | project IndicatorValue, ThreatType, Source, Confidence;
+//
+// SecurityEvent
+// | where TimeGenerated >= ago(1h)
+// | where EventID == 4624                        // Successful logon
+// | join kind=inner (ThreatIPs) on $left.IpAddress == $right.IndicatorValue
+// | project
+//     TimeGenerated,
+//     Computer,
+//     TargetUserName,
+//     IpAddress,
+//     ThreatType,
+//     Source,
+//     Confidence,
+//     LogonType
+// | order by TimeGenerated desc
+
+
+// --- Variant 3: Malicious file hash match ---
+
+// let ThreatHashes =
+//     _GetWatchlist('ThreatIntelIndicators')
+//     | where IndicatorType == "FileHash"
+//     | project IndicatorValue, ThreatType, Source, Confidence;
+//
+// // Requires Sysmon with hash logging enabled
+// Event
+// | where TimeGenerated >= ago(1h)
+// | where Source == "Microsoft-Windows-Sysmon"
+// | where EventID == 1                           // Process create
+// | extend EventData = parse_xml(EventData)
+// | extend
+//     Hashes  = tostring(EventData.DataItem.EventData.Data[17]["#text"]),
+//     Image   = tostring(EventData.DataItem.EventData.Data[4]["#text"]),
+//     User    = tostring(EventData.DataItem.EventData.Data[12]["#text"])
+// | extend SHA256 = extract(@'SHA256=([A-Fa-f0-9]{64})', 1, Hashes)
+// | join kind=inner (ThreatHashes) on $left.SHA256 == $right.IndicatorValue
+// | project
+//     TimeGenerated,
+//     Computer,
+//     User,
+//     Image,
+//     SHA256,
+//     ThreatType,
+//     Source,
+//     Confidence
+// | order by TimeGenerated desc
+
+
+// ============================================================
+// Recommended Threat Intel Sources (free):
+//
+// CISA Known Exploited Vulnerabilities (KEV):
+//   https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+//
+// abuse.ch Feodo Tracker (C2 IPs):
+//   https://feodotracker.abuse.ch/downloads/ipblocklist.txt
+//
+// abuse.ch MalwareBazaar (file hashes):
+//   https://bazaar.abuse.ch/export/
+//
+// AlienVault OTX (multi-type IOCs):
+//   https://otx.alienvault.com/
+//
+// Emerging Threats (network IOCs):
+//   https://rules.emergingthreats.net/
+//
+// Alert Logic Notes:
+// - Watchlist-based detection scales easily — add new IOCs
+//   without changing the KQL rule.
+// - Set ExpirationDate on IOCs to auto-age out stale indicators.
+// - Confidence field lets you tune alert severity dynamically.
+// - MITRE reference: https://attack.mitre.org/techniques/T1071/
+// ============================================================

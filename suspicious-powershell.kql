@@ -1,0 +1,117 @@
+// ============================================================
+// Rule Name:    Suspicious PowerShell Execution
+// Description:  Detects PowerShell executions with flags and
+//               patterns commonly used in malicious activity —
+//               encoded commands, download cradles, bypass flags,
+//               and AMSI/ETW tampering attempts.
+// Tactic:       Execution, Defense Evasion
+// Technique:    T1059.001 - Command and Scripting: PowerShell
+//               T1562.001 - Impair Defenses: Disable/Modify Tools
+// Severity:     High
+// Frequency:    Every 5 minutes
+// Lookback:     5 minutes
+// Data Source:  SecurityEvent (Event ID 4688 - Process Creation)
+//               Sysmon (Event ID 1)
+// ============================================================
+
+// Suspicious PowerShell flags and patterns
+let SuspiciousFlags = dynamic([
+    "-EncodedCommand",
+    "-enc ",
+    "-ec ",
+    "-ExecutionPolicy Bypass",
+    "-ep bypass",
+    "-WindowStyle Hidden",
+    "-w hidden",
+    "-NonInteractive",
+    "-noni",
+    "-NoProfile",
+    "-nop"
+]);
+
+let DownloadCradles = dynamic([
+    "IEX",
+    "Invoke-Expression",
+    "DownloadString",
+    "DownloadFile",
+    "WebClient",
+    "Net.WebClient",
+    "Invoke-WebRequest",
+    "iwr",
+    "curl",
+    "wget",
+    "Start-BitsTransfer"
+]);
+
+let AMSITampering = dynamic([
+    "AmsiUtils",
+    "amsiInitFailed",
+    "AmsiScanBuffer",
+    "System.Management.Automation.AmsiUtils",
+    "DisableBlockingByAntimalware"
+]);
+
+
+// --- Variant 1: Windows Security Events (Event ID 4688) ---
+// Requires "Audit Process Creation" GPO with command line logging enabled
+
+SecurityEvent
+| where TimeGenerated >= ago(5m)
+| where EventID == 4688                          // Process creation
+| where Process has_any ("powershell.exe", "pwsh.exe")
+| extend CommandLineLower = tolower(CommandLine)
+| extend
+    HasSuspiciousFlag  = CommandLine has_any (SuspiciousFlags),
+    HasDownloadCradle  = CommandLine has_any (DownloadCradles),
+    HasAMSITampering   = CommandLine has_any (AMSITampering),
+    IsEncodedCommand   = CommandLine matches regex @"(?i)(-enc|-encodedcommand)\s+[A-Za-z0-9+/=]{20,}"
+| where HasSuspiciousFlag or HasDownloadCradle or HasAMSITampering or IsEncodedCommand
+| extend
+    RiskScore = toint(HasSuspiciousFlag) + toint(HasDownloadCradle)*2 + toint(HasAMSITampering)*3 + toint(IsEncodedCommand)*2
+| project
+    TimeGenerated,
+    Computer,
+    Account,
+    ParentProcessName,
+    Process,
+    CommandLine,
+    HasSuspiciousFlag,
+    HasDownloadCradle,
+    HasAMSITampering,
+    IsEncodedCommand,
+    RiskScore
+| order by RiskScore desc, TimeGenerated desc
+
+
+// --- Variant 2: Sysmon Event ID 1 (Process Create) ---
+// More detailed — includes hashes, parent process, and user context
+
+// Event
+// | where TimeGenerated >= ago(5m)
+// | where Source == "Microsoft-Windows-Sysmon"
+// | where EventID == 1
+// | extend EventData = parse_xml(EventData)
+// | extend
+//     CommandLine     = tostring(EventData.DataItem.EventData.Data[10]["#text"]),
+//     ParentCmd       = tostring(EventData.DataItem.EventData.Data[13]["#text"]),
+//     Image           = tostring(EventData.DataItem.EventData.Data[4]["#text"]),
+//     User            = tostring(EventData.DataItem.EventData.Data[12]["#text"]),
+//     Hashes          = tostring(EventData.DataItem.EventData.Data[17]["#text"])
+// | where Image has_any ("powershell.exe", "pwsh.exe")
+// | where CommandLine has_any (SuspiciousFlags)
+//     or CommandLine has_any (DownloadCradles)
+//     or CommandLine has_any (AMSITampering)
+// | project TimeGenerated, Computer, User, Image, CommandLine, ParentCmd, Hashes
+
+
+// ============================================================
+// Alert Logic Notes:
+// - RiskScore helps prioritize: score of 3+ warrants immediate
+//   investigation, 1-2 may be legitimate admin activity.
+// - Encoded commands (-enc) are almost never used legitimately
+//   in production — high fidelity indicator.
+// - Download cradles combined with bypass flags = likely
+//   fileless malware delivery (e.g. PowerShell Empire, Cobalt Strike).
+// - Tune by whitelisting known admin scripts by hash or path.
+// - MITRE reference: https://attack.mitre.org/techniques/T1059/001/
+// ============================================================

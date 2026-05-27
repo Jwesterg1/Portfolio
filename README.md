@@ -1,93 +1,62 @@
-# Azure Sentinel SOC Lab
+# Watchlists
 
-A hands-on home lab simulating enterprise Security Operations Center (SOC) workflows using Microsoft Sentinel. Built to demonstrate practical skills in SIEM management, detection engineering, KQL query writing, and incident response.
+Sentinel watchlists allow you to correlate log data against reference lists — in this case, known malicious indicators (IOCs) sourced from threat intelligence feeds.
 
----
+## ThreatIntelIndicators Watchlist
 
-## 🧰 Lab Overview
+The file `ThreatIntelIndicators-sample.csv` is a template watchlist populated with sample IOCs for demonstration purposes. **Do not use these IPs/domains/hashes in production without verifying them against current threat intel feeds.**
 
-| Component | Technology |
-|---|---|
-| SIEM | Microsoft Sentinel |
-| Log Analytics | Azure Log Analytics Workspace |
-| Data Sources | Windows Event Logs, Azure AD / Entra ID, Syslog (Linux), Azure Activity |
-| Detection | KQL Scheduled Analytics Rules |
-| SOAR | Azure Logic Apps (Playbooks) |
-| Threat Intel | Watchlists + external IP feeds |
+### Schema
 
----
-
-## 📁 Repository Structure
-
-```
-sentinel-soc-lab/
-├── README.md
-├── architecture/
-│   └── lab-diagram.png          # High-level architecture diagram
-├── detection-rules/
-│   ├── brute-force-detection.kql
-│   ├── impossible-travel.kql
-│   └── new-admin-after-hours.kql
-├── playbooks/
-│   └── ip-enrichment-virustotal.json
-├── runbooks/
-│   ├── brute-force-ir-runbook.md
-│   └── account-compromise-runbook.md
-└── screenshots/
-    └── (sanitized screenshots of Sentinel dashboards and incidents)
-```
-
----
-
-## 🔍 Detection Rules
-
-Each `.kql` file in `/detection-rules` is a standalone Sentinel analytics rule. Rules are written to be generic and portable — no hardcoded tenant IDs, workspace names, or internal resource identifiers.
-
-| Rule | Tactic (MITRE) | Severity |
+| Column | Description | Example Values |
 |---|---|---|
-| Brute Force Detection | Credential Access (T1110) | High |
-| Impossible Travel | Initial Access (T1078) | Medium |
-| New Admin After Hours | Persistence (T1098) | High |
+| `IndicatorType` | Type of IOC | `IP`, `Domain`, `FileHash`, `URL` |
+| `IndicatorValue` | The actual indicator | `185.220.101.45` |
+| `ThreatType` | Category of threat | `C2`, `Malware`, `Phishing`, `Scanner` |
+| `Confidence` | Reliability of the indicator | `High`, `Medium`, `Low` |
+| `Source` | Where the indicator came from | `abuse.ch`, `AlienVault OTX`, `Internal` |
+| `Description` | Human-readable context | Free text |
+| `ExpirationDate` | When to retire the IOC | `YYYY-MM-DD` |
 
 ---
 
-## 📋 Runbooks
+## How to Load into Microsoft Sentinel
 
-Incident response runbooks in `/runbooks` document the triage and response process for each detection rule. Each runbook follows the NIST SP 800-61 incident response lifecycle:
+1. In Sentinel, go to **Configuration → Watchlists**
+2. Click **+ New**
+3. Set:
+   - **Name:** `ThreatIntelIndicators`
+   - **Alias:** `ThreatIntelIndicators` (must match the name used in KQL)
+   - **Source type:** Local file
+4. Upload `ThreatIntelIndicators-sample.csv`
+5. Set **SearchKey** to `IndicatorValue`
+6. Click **Review + Create**
 
-1. **Preparation**
-2. **Detection & Analysis**
-3. **Containment, Eradication & Recovery**
-4. **Post-Incident Activity**
-
----
-
-## 🤖 Playbooks
-
-Logic App playbooks in `/playbooks` automate response actions triggered by Sentinel incidents. Current playbooks:
-
-- **IP Enrichment via VirusTotal** — automatically queries VirusTotal on any incident containing an external IP and appends the result as an incident comment.
-
----
-
-## 🧠 Skills Demonstrated
-
-- Microsoft Sentinel deployment and configuration
-- Data connector setup and log ingestion
-- KQL (Kusto Query Language) for threat detection
-- MITRE ATT&CK framework mapping
-- Incident triage and response workflows
-- SOAR automation with Azure Logic Apps
-- Security documentation and runbook writing
+Once loaded, reference it in KQL with:
+```kql
+_GetWatchlist('ThreatIntelIndicators')
+```
 
 ---
 
-## ⚠️ Disclaimer
+## Recommended Free Threat Intel Sources
 
-This lab was built in an isolated Azure sandbox environment for educational and portfolio purposes. All screenshots have been sanitized — tenant IDs, subscription IDs, email addresses, and internal resource names have been redacted.
+| Source | Type | URL |
+|---|---|---|
+| abuse.ch Feodo Tracker | C2 IPs | https://feodotracker.abuse.ch/downloads/ipblocklist.txt |
+| abuse.ch MalwareBazaar | File Hashes | https://bazaar.abuse.ch/export/ |
+| AlienVault OTX | Multi-type | https://otx.alienvault.com/ |
+| CISA KEV | Vulnerability IOCs | https://www.cisa.gov/known-exploited-vulnerabilities-catalog |
+| Emerging Threats | Network IOCs | https://rules.emergingthreats.net/ |
+| URLhaus | Malicious URLs | https://urlhaus.abuse.ch/ |
 
 ---
 
-## 📌 Status
+## Keeping the Watchlist Fresh
 
-🟡 In Progress — actively building out detection rules and playbooks.
+For a production environment, automate watchlist updates using a **Logic App** that:
+1. Pulls the latest feed from your chosen source (e.g. abuse.ch CSV)
+2. Parses and formats to the watchlist schema
+3. Calls the Sentinel API to update the watchlist
+
+This is a good next project milestone to add to this repo.

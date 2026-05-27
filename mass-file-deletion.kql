@@ -1,0 +1,121 @@
+// ============================================================
+// Rule Name:    Mass File Deletion - Ransomware Precursor
+// Description:  Detects a high volume of file deletion events
+//               from a single process or user within a short
+//               window. Common precursor to ransomware deployment
+//               or destructive attack (wiper malware).
+// Tactic:       Impact
+// Technique:    T1485 - Data Destruction
+//               T1486 - Data Encrypted for Impact
+// Severity:     High
+// Frequency:    Every 5 minutes
+// Lookback:     15 minutes
+// Data Source:  Sysmon (Event ID 23 - File Delete)
+//               SecurityEvent + File Auditing (Event ID 4663)
+// ============================================================
+
+let DeletionThreshold = 50;       // Flag if >50 files deleted in window
+let TimeWindow = 15m;
+
+// Suspicious file extensions commonly targeted by ransomware
+let TargetExtensions = dynamic([
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".pdf", ".txt", ".csv", ".jpg", ".jpeg", ".png",
+    ".zip", ".rar", ".7z", ".bak", ".sql", ".mdb",
+    ".pst", ".ost", ".vhd", ".vmdk"
+]);
+
+// Processes that legitimately delete many files (exclude from alert)
+let LegitProcesses = dynamic([
+    "cleanmgr.exe",
+    "msiexec.exe",
+    "trustedinstaller.exe",
+    "svchost.exe"
+]);
+
+
+// --- Variant 1: Sysmon Event ID 23 (File Delete) ---
+
+// Event
+// | where TimeGenerated >= ago(TimeWindow)
+// | where Source == "Microsoft-Windows-Sysmon"
+// | where EventID == 23                          // File deleted
+// | extend EventData  = parse_xml(EventData)
+// | extend
+//     Image         = tostring(EventData.DataItem.EventData.Data[4]["#text"]),
+//     TargetFilename= tostring(EventData.DataItem.EventData.Data[9]["#text"]),
+//     User          = tostring(EventData.DataItem.EventData.Data[12]["#text"])
+// | where not(Image has_any (LegitProcesses))
+// | extend FileExtension = tostring(extract(@'(\.[^.]+)$', 1, TargetFilename))
+// | where FileExtension in~ (TargetExtensions)
+// | summarize
+//     FileCount     = count(),
+//     DeletedFiles  = make_set(TargetFilename, 20),
+//     FirstDeletion = min(TimeGenerated),
+//     LastDeletion  = max(TimeGenerated)
+//     by Image, User, Computer
+// | where FileCount >= DeletionThreshold
+// | extend TimeDeltaSeconds = datetime_diff('second', LastDeletion, FirstDeletion)
+// | extend DeletionsPerMinute = FileCount / max_of(TimeDeltaSeconds / 60.0, 1.0)
+// | project
+//     FirstDeletion,
+//     LastDeletion,
+//     Computer,
+//     User,
+//     Image,
+//     FileCount,
+//     DeletionsPerMinute,
+//     DeletedFiles
+// | order by FileCount desc
+
+
+// --- Variant 2: Windows Security Event ID 4663 ---
+// Requires object access auditing enabled on monitored folders
+
+SecurityEvent
+| where TimeGenerated >= ago(TimeWindow)
+| where EventID == 4663                          // Object access attempt
+| where ObjectType == "File"
+| where AccessMask == "0x10000"                  // DELETE access
+| where not(ProcessName has_any (LegitProcesses))
+| extend FileExtension = tostring(extract(@'(\.[^.]+)$', 1, ObjectName))
+| where FileExtension in~ (TargetExtensions)
+| summarize
+    FileCount     = count(),
+    DeletedFiles  = make_set(ObjectName, 20),
+    FirstDeletion = min(TimeGenerated),
+    LastDeletion  = max(TimeGenerated)
+    by ProcessName, SubjectUserName, Computer
+| where FileCount >= DeletionThreshold
+| extend TimeDeltaSeconds = datetime_diff('second', LastDeletion, FirstDeletion)
+| extend DeletionsPerMinute = round(FileCount / max_of(TimeDeltaSeconds / 60.0, 1.0), 1)
+| project
+    FirstDeletion,
+    LastDeletion,
+    Computer,
+    SubjectUserName,
+    ProcessName,
+    FileCount,
+    DeletionsPerMinute,
+    DeletedFiles
+| order by FileCount desc
+
+
+// ============================================================
+// Alert Logic Notes:
+// - DeletionThreshold of 50 is conservative — tune based on
+//   your environment. A developer cleaning a build folder may
+//   delete hundreds of files legitimately.
+// - DeletionsPerMinute is a stronger signal than raw count —
+//   ransomware typically deletes/encrypts at machine speed (100+/min).
+// - Pair with:
+//     * File rename events (encryption renames files with new extension)
+//     * Shadow copy deletion (vssadmin delete shadows — T1490)
+//     * Unusual process spawning cmd.exe or powershell.exe
+// - Shadow copy deletion query (add as correlated hunt):
+//     SecurityEvent
+//     | where EventID == 4688
+//     | where CommandLine has_any ("vssadmin", "wmic shadowcopy", "bcdedit")
+//     | where CommandLine has_any ("delete", "recoveryenabled no")
+// - MITRE reference: https://attack.mitre.org/techniques/T1485/
+// ============================================================
