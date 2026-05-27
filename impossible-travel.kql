@@ -1,0 +1,99 @@
+// ============================================================
+// Rule Name:    Impossible Travel Detection
+// Description:  Detects when a user account logs in from two
+//               geographically distant locations within a time
+//               window that would be physically impossible to
+//               travel between.
+// Tactic:       Initial Access
+// Technique:    T1078 - Valid Accounts
+// Severity:     Medium
+// Frequency:    Every 1 hour
+// Lookback:     2 hours
+// Data Source:  SigninLogs (Azure AD / Entra ID)
+// ============================================================
+
+// Minimum speed threshold in km/h to flag as impossible
+// Commercial flight ~900 km/h; set lower to catch outliers
+let ImpossibleSpeedKmH = 800;
+let TimeWindow = 2h;
+
+SigninLogs
+| where TimeGenerated >= ago(TimeWindow)
+| where ResultType == "0"                        // Successful logins only
+| where isnotempty(LocationDetails)
+| extend
+    Latitude  = toreal(LocationDetails.geoCoordinates.latitude),
+    Longitude = toreal(LocationDetails.geoCoordinates.longitude),
+    City      = tostring(LocationDetails.city),
+    Country   = tostring(LocationDetails.countryOrRegion)
+| where isnotempty(Latitude) and isnotempty(Longitude)
+| project
+    TimeGenerated,
+    UserPrincipalName,
+    IPAddress,
+    City,
+    Country,
+    Latitude,
+    Longitude,
+    AppDisplayName,
+    DeviceDetail
+// Self-join to find pairs of logins per user
+| join kind=inner (
+    SigninLogs
+    | where TimeGenerated >= ago(TimeWindow)
+    | where ResultType == "0"
+    | where isnotempty(LocationDetails)
+    | extend
+        Latitude2  = toreal(LocationDetails.geoCoordinates.latitude),
+        Longitude2 = toreal(LocationDetails.geoCoordinates.longitude),
+        City2      = tostring(LocationDetails.city),
+        Country2   = tostring(LocationDetails.countryOrRegion)
+    | where isnotempty(Latitude2) and isnotempty(Longitude2)
+    | project
+        TimeGenerated2 = TimeGenerated,
+        UserPrincipalName,
+        IPAddress2 = IPAddress,
+        City2,
+        Country2,
+        Latitude2,
+        Longitude2
+) on UserPrincipalName
+// Only look at login pairs where the second is after the first
+| where TimeGenerated2 > TimeGenerated
+| where IPAddress != IPAddress2                  // Different IPs
+// Calculate time difference in hours
+| extend TimeDiffHours = datetime_diff('minute', TimeGenerated2, TimeGenerated) / 60.0
+// Haversine approximation for distance in km
+| extend
+    dLat = radians(Latitude2 - Latitude),
+    dLon = radians(Longitude2 - Longitude)
+| extend
+    a = sin(dLat/2)*sin(dLat/2) + cos(radians(Latitude))*cos(radians(Latitude2))*sin(dLon/2)*sin(dLon/2)
+| extend DistanceKm = 2 * 6371 * asin(sqrt(a))
+// Calculate required speed
+| extend RequiredSpeedKmH = DistanceKm / TimeDiffHours
+| where RequiredSpeedKmH > ImpossibleSpeedKmH
+| where TimeDiffHours > 0
+| project
+    FirstLogin    = TimeGenerated,
+    SecondLogin   = TimeGenerated2,
+    UserPrincipalName,
+    FirstIP       = IPAddress,
+    SecondIP      = IPAddress2,
+    FirstLocation = strcat(City, ", ", Country),
+    SecondLocation= strcat(City2, ", ", Country2),
+    DistanceKm    = round(DistanceKm, 0),
+    TimeDiffHours = round(TimeDiffHours, 2),
+    RequiredSpeedKmH = round(RequiredSpeedKmH, 0)
+| order by RequiredSpeedKmH desc
+
+
+// ============================================================
+// Alert Logic Notes:
+// - This rule flags physically improbable login sequences.
+//   Common causes: VPN usage, Tor exit nodes, compromised creds.
+// - Tune ImpossibleSpeedKmH down to ~500 to reduce VPN false
+//   positives, or add a VPN IP watchlist exclusion.
+// - Consider enriching flagged IPs with threat intel lookups.
+// - MITRE reference: https://attack.mitre.org/techniques/T1078/
+// ============================================================

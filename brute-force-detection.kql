@@ -1,0 +1,79 @@
+// ============================================================
+// Rule Name:    Brute Force Detection - Multiple Failed Logins
+// Description:  Detects 5 or more failed login attempts from a
+//               single IP address within a 5-minute window,
+//               followed by a successful login (optional join).
+// Tactic:       Credential Access
+// Technique:    T1110 - Brute Force
+// Severity:     High
+// Frequency:    Every 5 minutes
+// Lookback:     5 minutes
+// Data Source:  SecurityEvent (Windows), SigninLogs (Azure AD)
+// ============================================================
+
+// --- Variant 1: Windows Security Events (Event ID 4625) ---
+// Detects failed logins on Windows hosts
+
+let FailedLoginThreshold = 5;
+let TimeWindow = 5m;
+
+SecurityEvent
+| where TimeGenerated >= ago(TimeWindow)
+| where EventID == 4625                          // Failed logon
+| where AccountType == "User"
+| summarize
+    FailedAttempts = count(),
+    TargetAccounts = make_set(TargetUserName),
+    FirstAttempt = min(TimeGenerated),
+    LastAttempt = max(TimeGenerated)
+    by IpAddress, Computer
+| where FailedAttempts >= FailedLoginThreshold
+| extend
+    TimeDelta = LastAttempt - FirstAttempt,
+    AccountCount = array_length(TargetAccounts)
+| project
+    FirstAttempt,
+    LastAttempt,
+    TimeDelta,
+    IpAddress,
+    Computer,
+    FailedAttempts,
+    AccountCount,
+    TargetAccounts
+| order by FailedAttempts desc
+
+
+// --- Variant 2: Azure AD Sign-In Logs ---
+// Detects failed logins against Entra ID (cloud accounts)
+
+// let FailedLoginThreshold = 5;
+// let TimeWindow = 5m;
+//
+// SigninLogs
+// | where TimeGenerated >= ago(TimeWindow)
+// | where ResultType != "0"                      // Non-zero = failed
+// | where ResultType !in ("50076", "50079")      // Exclude MFA challenges
+// | summarize
+//     FailedAttempts = count(),
+//     TargetAccounts = make_set(UserPrincipalName),
+//     FirstAttempt = min(TimeGenerated),
+//     LastAttempt = max(TimeGenerated)
+//     by IPAddress
+// | where FailedAttempts >= FailedLoginThreshold
+// | project
+//     FirstAttempt,
+//     LastAttempt,
+//     IPAddress,
+//     FailedAttempts,
+//     TargetAccounts
+// | order by FailedAttempts desc
+
+
+// ============================================================
+// Alert Logic Notes:
+// - Threshold of 5 failures in 5 min is a starting baseline.
+//   Tune based on your environment's normal login patterns.
+// - Consider whitelisting known scanner IPs or service accounts.
+// - Pair with a successful login check (Event ID 4624) on the
+//   same IP to escalate priority (credential stuffing pattern).
+// ============================================================

@@ -1,0 +1,113 @@
+// ============================================================
+// Rule Name:    New Privileged Account Created After Hours
+// Description:  Detects creation of new accounts with admin or
+//               privileged group membership outside of normal
+//               business hours (Mon-Fri, 08:00-18:00 local).
+// Tactic:       Persistence
+// Technique:    T1098 - Account Manipulation
+//               T1136 - Create Account
+// Severity:     High
+// Frequency:    Every 1 hour
+// Lookback:     1 hour
+// Data Source:  SecurityEvent (Windows), AuditLogs (Azure AD)
+// ============================================================
+
+// Define business hours (UTC — adjust offset for your timezone)
+let BusinessHourStart = 13;   // 08:00 EST = 13:00 UTC
+let BusinessHourEnd   = 23;   // 18:00 EST = 23:00 UTC
+let BusinessDays      = dynamic([1,2,3,4,5]); // Mon=1 ... Sun=7
+
+// Privileged groups to watch — extend as needed
+let PrivilegedGroups  = dynamic([
+    "Domain Admins",
+    "Enterprise Admins",
+    "Schema Admins",
+    "Administrators",
+    "Account Operators",
+    "Backup Operators"
+]);
+
+
+// --- Variant 1: Windows Security Events ---
+// Event 4720 = User account created
+// Event 4728 / 4732 / 4756 = Member added to security group
+
+SecurityEvent
+| where TimeGenerated >= ago(1h)
+| where EventID in (4720, 4728, 4732, 4756)
+| extend
+    HourOfDay   = hourofday(TimeGenerated),
+    DayOfWeek   = dayofweek(TimeGenerated) / 1d  // Returns 0=Sun ... 6=Sat; convert below
+| extend
+    DayOfWeekNum = case(
+        DayOfWeek == 0, 7,  // Sunday
+        toint(DayOfWeek)
+    )
+| extend
+    IsAfterHours = (
+        HourOfDay < BusinessHourStart or
+        HourOfDay >= BusinessHourEnd or
+        not(DayOfWeekNum in (BusinessDays))
+    )
+| where IsAfterHours == true
+| where EventID == 4720                          // Account creation
+    or (EventID in (4728, 4732, 4756) and TargetUserName in~ (PrivilegedGroups))
+| project
+    TimeGenerated,
+    EventID,
+    Activity,
+    SubjectUserName,                             // Who performed the action
+    TargetUserName,                              // Account or group affected
+    Computer,
+    HourOfDay,
+    DayOfWeekNum,
+    IsAfterHours
+| order by TimeGenerated desc
+
+
+// --- Variant 2: Azure AD Audit Logs ---
+// Catches privileged role assignments in Entra ID
+
+// AuditLogs
+// | where TimeGenerated >= ago(1h)
+// | where OperationName in (
+//     "Add member to role",
+//     "Add user",
+//     "Add member to group"
+// )
+// | where Result == "success"
+// | extend
+//     InitiatedBy   = tostring(InitiatedBy.user.userPrincipalName),
+//     TargetUPN     = tostring(TargetResources[0].userPrincipalName),
+//     TargetRole    = tostring(TargetResources[0].displayName),
+//     HourOfDay     = hourofday(TimeGenerated),
+//     DayOfWeekNum  = dayofweek(TimeGenerated) / 1d
+// | extend
+//     IsAfterHours = (
+//         HourOfDay < BusinessHourStart or
+//         HourOfDay >= BusinessHourEnd or
+//         DayOfWeekNum !in (BusinessDays)
+//     )
+// | where IsAfterHours == true
+// | project
+//     TimeGenerated,
+//     OperationName,
+//     InitiatedBy,
+//     TargetUPN,
+//     TargetRole,
+//     HourOfDay,
+//     IsAfterHours
+// | order by TimeGenerated desc
+
+
+// ============================================================
+// Alert Logic Notes:
+// - Adjust UTC offsets in BusinessHourStart/End for your
+//   organization's timezone. Currently set for US Eastern.
+// - After-hours admin account creation is a strong persistence
+//   indicator — adversaries often create backdoor accounts
+//   during off-hours to avoid detection.
+// - Cross-reference with Event ID 4624 (logon) to see if the
+//   newly created account was immediately used.
+// - MITRE reference: https://attack.mitre.org/techniques/T1098/
+// ============================================================
